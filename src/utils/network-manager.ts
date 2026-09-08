@@ -64,9 +64,13 @@ export async function getActiveDnsServers(device: string): Promise<string[]> {
     'show',
     device,
   ]);
+  // `nmcli -g` prints a multi-value field like IP4.DNS as one line, values
+  // joined by " | " — not one value per line, despite what `nmcli --help` on
+  // -g/--get-values ("printed one per line") suggests for the general case.
+  // Splitting on both handles either shape.
   return stdout
-    .split('\n')
-    .map((line) => line.trim())
+    .split(/[|\n]/)
+    .map((server) => server.trim())
     .filter(Boolean);
 }
 
