@@ -74,6 +74,23 @@ export async function getActiveDnsServers(device: string): Promise<string[]> {
     .filter(Boolean);
 }
 
+/**
+ * Whether the connection has a manually-set DNS override (e.g. from switching
+ * a preset here) rather than using whatever DHCP handed out.
+ */
+export async function hasManualDnsOverride(
+  connectionName: string
+): Promise<boolean> {
+  const { stdout } = await execa('nmcli', [
+    '-g',
+    'ipv4.ignore-auto-dns',
+    'connection',
+    'show',
+    connectionName,
+  ]);
+  return stdout.trim() === 'yes';
+}
+
 export async function setDnsServers(
   connection: ActiveConnection,
   servers: string[]

@@ -24,6 +24,7 @@ import { measureLatencies } from './utils/latency';
 import {
   getActiveConnection,
   getActiveDnsServers,
+  hasManualDnsOverride,
   resetDnsToAutomatic,
   setDnsServers,
 } from './utils/network-manager';
@@ -54,22 +55,34 @@ function latencyAccessory(latencyMs: number | null): List.Item.Accessory {
 /**
  * The configured upstream servers, in priority order, plus where they came from.
  *
- * In dns=dnsmasq mode, dnsmasq forwards to whatever the active connection's own
- * DNS is set to (DHCP-provided, or manually set by switching a preset here) FIRST,
- * falling back to the static server= entries in dnsmasq.d/*.conf only if that
- * fails — the static entries alone would never reflect a preset switch, since
- * switching only ever touches the connection's DNS, not those files.
+ * In dns=dnsmasq mode there are two independent DNS sources: the connection's
+ * own DNS (DHCP-provided, or manually overridden by switching a preset here)
+ * and the static server= entries in dnsmasq.d/*.conf. Which one actually wins
+ * depends on *why* the connection has the DNS it has:
+ * - A manual override (ipv4.ignore-auto-dns=yes, set by switching a preset)
+ *   is a deliberate choice and takes priority over the static config.
+ * - An automatic/DHCP-provided DNS (e.g. the router's own IP) is not — the
+ *   whole point of a hand-configured dnsmasq.d is to not rely on whatever the
+ *   router handed out, so the static entries take priority in that case, with
+ *   the DHCP value kept only as a last-resort fallback.
  */
 async function resolveUpstreamCandidates(
-  device: string
+  connection: ActiveConnection
 ): Promise<{ source: DnsSource; servers: string[] }> {
   if (await isDnsmasqModeActive()) {
-    const connectionServers = await getActiveDnsServers(device);
+    const connectionServers = await getActiveDnsServers(connection.device);
     const staticFallback = await getDnsmasqUpstreamServers();
-    const servers = [
-      ...connectionServers,
-      ...staticFallback.filter((server) => !connectionServers.includes(server)),
-    ];
+    const manualOverride = await hasManualDnsOverride(connection.name);
+
+    const servers = manualOverride
+      ? [
+          ...connectionServers,
+          ...staticFallback.filter((s) => !connectionServers.includes(s)),
+        ]
+      : [
+          ...staticFallback,
+          ...connectionServers.filter((s) => !staticFallback.includes(s)),
+        ];
 
     if (servers.length > 0) {
       return { source: 'dnsmasq', servers };
@@ -78,7 +91,7 @@ async function resolveUpstreamCandidates(
 
   return {
     source: 'networkmanager',
-    servers: await getActiveDnsServers(device),
+    servers: await getActiveDnsServers(connection.device),
   };
 }
 
@@ -100,7 +113,7 @@ export default function Command() {
       const conn = await getActiveConnection();
       setConnection(conn);
 
-      const { source, servers } = await resolveUpstreamCandidates(conn.device);
+      const { source, servers } = await resolveUpstreamCandidates(conn);
       setDnsSource(source);
 
       const presetServerLists = DNS_PRESETS.map((preset) =>
