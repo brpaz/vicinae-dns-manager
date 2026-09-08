@@ -51,14 +51,28 @@ function latencyAccessory(latencyMs: number | null): List.Item.Accessory {
   };
 }
 
-/** The configured upstream servers, in priority order, plus where they came from. */
+/**
+ * The configured upstream servers, in priority order, plus where they came from.
+ *
+ * In dns=dnsmasq mode, dnsmasq forwards to whatever the active connection's own
+ * DNS is set to (DHCP-provided, or manually set by switching a preset here) FIRST,
+ * falling back to the static server= entries in dnsmasq.d/*.conf only if that
+ * fails — the static entries alone would never reflect a preset switch, since
+ * switching only ever touches the connection's DNS, not those files.
+ */
 async function resolveUpstreamCandidates(
   device: string
 ): Promise<{ source: DnsSource; servers: string[] }> {
   if (await isDnsmasqModeActive()) {
-    const dnsmasqServers = await getDnsmasqUpstreamServers();
-    if (dnsmasqServers.length > 0) {
-      return { source: 'dnsmasq', servers: dnsmasqServers };
+    const connectionServers = await getActiveDnsServers(device);
+    const staticFallback = await getDnsmasqUpstreamServers();
+    const servers = [
+      ...connectionServers,
+      ...staticFallback.filter((server) => !connectionServers.includes(server)),
+    ];
+
+    if (servers.length > 0) {
+      return { source: 'dnsmasq', servers };
     }
   }
 
