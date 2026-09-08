@@ -51,6 +51,10 @@ Open **Manage DNS**. The **Active** section shows your current default connectio
 - Linux with NetworkManager (the extension shells out to `nmcli`).
 - DNS is switched on whichever connection currently owns the default route — the extension detects this automatically.
 
+### NetworkManager's dnsmasq mode
+
+If NetworkManager is configured with `dns=dnsmasq` (`/etc/NetworkManager/conf.d/*.conf`), all DNS resolution goes through its embedded dnsmasq instance, and `nmcli`'s `IP4.DNS` only reports the DHCP-received server — not what dnsmasq is actually configured to forward to. In that case the extension instead reads the general-purpose `server=` entries from `/etc/NetworkManager/dnsmasq.d/*.conf` (domain-scoped split-DNS entries like `server=/example.com/ip` are ignored), probes each in priority order, and shows the first one that actually answers as "Active" — a "Configured Upstream" section lists the full fallback chain with live latency for each.
+
 ## 📝 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

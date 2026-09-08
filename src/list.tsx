@@ -9,7 +9,17 @@ import {
   Toast,
 } from '@vicinae/api';
 import { useCallback, useEffect, useState } from 'react';
-import type { ActiveConnection, DnsPreset, DnsProbeResult } from './types';
+import type {
+  ActiveConnection,
+  DnsPreset,
+  DnsProbeResult,
+  DnsSource,
+  UpstreamCandidate,
+} from './types';
+import {
+  getDnsmasqUpstreamServers,
+  isDnsmasqModeActive,
+} from './utils/dnsmasq';
 import { measureLatencies } from './utils/latency';
 import {
   getActiveConnection,
@@ -41,10 +51,30 @@ function latencyAccessory(latencyMs: number | null): List.Item.Accessory {
   };
 }
 
+/** The configured upstream servers, in priority order, plus where they came from. */
+async function resolveUpstreamCandidates(
+  device: string
+): Promise<{ source: DnsSource; servers: string[] }> {
+  if (await isDnsmasqModeActive()) {
+    const dnsmasqServers = await getDnsmasqUpstreamServers();
+    if (dnsmasqServers.length > 0) {
+      return { source: 'dnsmasq', servers: dnsmasqServers };
+    }
+  }
+
+  return {
+    source: 'networkmanager',
+    servers: await getActiveDnsServers(device),
+  };
+}
+
 export default function Command() {
   const [isLoading, setIsLoading] = useState(true);
   const [connection, setConnection] = useState<ActiveConnection | null>(null);
-  const [active, setActive] = useState<DnsProbeResult | null>(null);
+  const [dnsSource, setDnsSource] = useState<DnsSource | null>(null);
+  const [upstreamCandidates, setUpstreamCandidates] = useState<
+    UpstreamCandidate[]
+  >([]);
   const [presetResults, setPresetResults] = useState<
     Map<string, DnsProbeResult>
   >(new Map());
@@ -56,20 +86,24 @@ export default function Command() {
       const conn = await getActiveConnection();
       setConnection(conn);
 
-      const activeServers = await getActiveDnsServers(conn.device);
-      const presetServerLists = DNS_PRESETS.map((preset) => preset.servers);
+      const { source, servers } = await resolveUpstreamCandidates(conn.device);
+      setDnsSource(source);
 
-      const [activeLatencies, ...presetLatencies] = await Promise.all([
-        measureLatencies(activeServers.slice(0, 1)),
-        ...presetServerLists.map((servers) =>
-          measureLatencies(servers.slice(0, 1))
-        ),
+      const presetServerLists = DNS_PRESETS.map((preset) =>
+        preset.servers.slice(0, 1)
+      );
+
+      const [upstreamLatencies, ...presetLatencies] = await Promise.all([
+        measureLatencies(servers),
+        ...presetServerLists.map((s) => measureLatencies(s)),
       ]);
 
-      setActive({
-        servers: activeServers,
-        latencyMs: activeLatencies[0] ?? null,
-      });
+      setUpstreamCandidates(
+        servers.map((server, index) => ({
+          server,
+          latencyMs: upstreamLatencies[index] ?? null,
+        }))
+      );
 
       const results = new Map<string, DnsProbeResult>();
       DNS_PRESETS.forEach((preset, index) => {
@@ -152,25 +186,60 @@ export default function Command() {
     />
   );
 
+  // dnsmasq applies strict-order + fallback, trying candidates in configured order
+  // and skipping unreachable ones — the first one that actually answers here is
+  // the best available approximation of "the server currently in use".
+  const activeCandidate =
+    upstreamCandidates.find((candidate) => candidate.latencyMs !== null) ??
+    upstreamCandidates[0];
+
   return (
     <List isLoading={isLoading}>
       <List.Section title="Active">
         <List.Item
           title={connection ? connection.name : 'No active connection'}
-          subtitle={active ? active.servers.join(', ') : undefined}
+          subtitle={activeCandidate ? activeCandidate.server : undefined}
           icon={{ source: Icon.Network, tintColor: Color.Blue }}
-          accessories={active ? [latencyAccessory(active.latencyMs)] : []}
+          accessories={[
+            ...(activeCandidate
+              ? [latencyAccessory(activeCandidate.latencyMs)]
+              : []),
+            ...(dnsSource
+              ? [
+                  {
+                    tag: dnsSource === 'dnsmasq' ? 'dnsmasq' : 'NetworkManager',
+                  },
+                ]
+              : []),
+          ]}
           actions={<ActionPanel>{refreshAction}</ActionPanel>}
         />
       </List.Section>
+
+      {dnsSource === 'dnsmasq' && upstreamCandidates.length > 1 && (
+        <List.Section title="Configured Upstream (dnsmasq, in priority order)">
+          {upstreamCandidates.map((candidate) => (
+            <List.Item
+              key={candidate.server}
+              title={candidate.server}
+              icon={
+                candidate.server === activeCandidate?.server
+                  ? { source: Icon.CheckCircle, tintColor: Color.Green }
+                  : Icon.Plug
+              }
+              accessories={[latencyAccessory(candidate.latencyMs)]}
+              actions={<ActionPanel>{refreshAction}</ActionPanel>}
+            />
+          ))}
+        </List.Section>
+      )}
 
       <List.Section title="Presets">
         {DNS_PRESETS.map((preset) => {
           const result = presetResults.get(preset.id);
           const isActive =
-            active !== null &&
-            active.servers.length > 0 &&
-            preset.servers.includes(active.servers[0]);
+            activeCandidate !== undefined &&
+            preset.servers.includes(activeCandidate.server);
 
           return (
             <List.Item
